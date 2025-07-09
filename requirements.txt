@@ -1,0 +1,10 @@
+langchain-community
+langchain-openai
+langchain-neo4j
+langchain_experimental
+dotenv
+langchain
+Pillow
+pytesseract
+neo4j
+pymupdf
