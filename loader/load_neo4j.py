@@ -27,9 +27,13 @@ def load_data_neo4j(raw_text: str):
     llm_transformer = LLMGraphTransformer(
         llm = llm,
         additional_instructions=(
-        "Please ensure that all entity names, relation names, and values are "
+        "Please ensure that all entities, relationship, label and values are "
         "extracted and returned in Vietnamese, preserving the original language "
-        "of the input text.")
+        "of the input text."),
+        allowed_nodes=["Người", "Vị trí", "Địa điểm", "Khái niệm", "Sự kiện", 
+                       "Tổ chức", "Hành động", "Thời gian", "Ngày", "Đối tượng",
+                       "Đồ vật", "Sản phẩm", "Dịch vụ", "Tài nguyên", "Tài liệu",
+                       "Món ăn", "Thực phẩm", "Vật phẩm", "Số liệu", "Dân tộc", ],
     )
 
     grahp_documents = llm_transformer.convert_to_graph_documents(chunks)

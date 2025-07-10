@@ -1,11 +1,13 @@
 from langchain_neo4j.vectorstores.neo4j_vector import Neo4jVector
 from langchain_neo4j.graphs.neo4j_graph import Neo4jGraph
+from langchain_neo4j.chains.graph_qa.cypher import GraphCypherQAChain
+from langchain_neo4j.chains.graph_qa.cypher_utils import CypherQueryCorrector
 from langchain_core.prompts import ChatPromptTemplate
+from langchain.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from pydantic import BaseModel,Field
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.output_parsers import StrOutputParser
-from langchain_neo4j.vectorstores.neo4j_vector import remove_lucene_chars
 from dotenv import load_dotenv
 import os,re
 
@@ -35,13 +37,75 @@ class GraphRetriever():
                 username = os.getenv("NEO4J_USERNAME"),          
                 password = os.getenv("NEO4J_PASSWORD"),         
                 database = os.getenv("NEO4J_DATABASE")
-            )  
+            )    
+    
+    def clean_sub_graph(self, sub_graph: str) -> str:
+        pattern = re.compile(r"->|[-_]")
+        cleaned_lines = [
+            re.sub(r"\s+", " ", pattern.sub(" ", el["output"])).strip()
+            for el in sub_graph
+        ]
+        result = "\n".join(cleaned_lines)
+        return result
 
-    def graph_retriever(self, question: str) -> str:
-        """
-        Collects the neighborhood of entities mentioned
-        in the question
-        """
+    def cypher_deep_node(self, node: str):
+        response = self.graph.query(
+            """
+            MATCH path = (startNode {id: $startName})-[rels*2]-(endNode)
+                WHERE ALL(r IN rels WHERE type(r) <> 'MENTIONS')
+                AND ALL(n IN nodes(path) WHERE SINGLE(m IN nodes(path) WHERE m = n))
+                WITH path, nodes(path) AS nodeList, relationships(path) AS relList
+                RETURN 
+                    reduce(
+                        s = nodeList[0].id, 
+                        i IN RANGE(0, size(relList)-1) | 
+                        s + " - " + type(relList[i]) + " -> " + nodeList[i+1].id
+                    ) AS output
+                LIMIT 200
+            """,
+            {
+                "startName": node
+            }
+        )
+        return response
+    
+    def cypher_adjacent_node(self, node: str):
+        response = self.graph.query(
+            """
+            MATCH path = (startNode {id: $startName})-[rels*1]-(endNode)
+                WHERE ALL(r IN rels WHERE type(r) <> 'MENTIONS')
+                AND ALL(n IN nodes(path) WHERE SINGLE(m IN nodes(path) WHERE m = n))
+                WITH path, nodes(path) AS nodeList, relationships(path) AS relList
+                RETURN 
+                    reduce(
+                        s = nodeList[0].id, 
+                        i IN RANGE(0, size(relList)-1) | 
+                        s + " - " + type(relList[i]) + " -> " + nodeList[i+1].id
+                    ) AS output
+                LIMIT 200
+            """,
+            {
+                "startName": node
+            }
+        )
+        return response
+
+    def filter_sub_graph(self, question: str,sub_grap_data) -> str:
+        template = PromptTemplate(
+            input_variables=["sub_grap_data", "question"],
+            template= """Tôi có danh sách kết quả ngữ cảnh
+                    {sub_grap_data}
+                    Tôi muốn lọc ra danh sách ngữ cảnh mới phù hợp với ngữ cảnh câu hỏi:{question}. 
+                    Chỉ trả về kết quả danh sách không trả lời gì thêm."""
+        )
+        chain = template | self.llm | StrOutputParser()
+        response = chain.invoke({
+            "sub_grap_data": sub_grap_data,
+            "question": question
+        })
+        return response
+    
+    def graph_retriever(self, question: str,type_graph) -> str:
         prompt = ChatPromptTemplate.from_messages(
                 [
                     (
@@ -55,58 +119,47 @@ class GraphRetriever():
                     ),
                 ]
             )
-
         entity_chain = prompt | self.llm.with_structured_output(Entities)
-       
-        clean_line = []
+    
         entities = entity_chain.invoke({"question": question})
+        result = []
         for entity in entities.name:
-            response = self.graph.query(
-                """CALL db.index.fulltext.queryNodes('entity', $query, {limit:2})
-                    YIELD node AS startNode, score
-                    MATCH (startNode)-[r1]-(n1)
-                    WHERE NOT type(r1) = 'MENTIONS'
-                    WITH startNode, n1, r1
-                    OPTIONAL MATCH (n1)-[r2]-(n2)
-                    WHERE NOT type(r2) = 'MENTIONS' AND n2 <> startNode
-                    RETURN DISTINCT
-                    startNode.id AS from,
-                    type(r1) AS rel1,
-                    n1.id AS middle,
-                    type(r2) AS rel2,
-                    n2.id AS to
-                    LIMIT 100;
-                """,
-                {"query": entity},
-            )
-        for item in response:
-            from_part = item['from']
-            rel1 = item['rel1']
-            middle = item['middle']
-            rel2 = item.get('rel2')
-            to = item.get('to')
-
-            if rel2 and to:
-                line = f"{from_part} {rel1} {middle} {rel2} {to}"
-            else:
-                line = f"{from_part} {rel1} {middle}"
-            line = re.sub(r"_", " ", line)
-            clean_line.append(line)
-        result = "\n".join(clean_line)
+            if type_graph == "sub":
+                response = self.cypher_adjacent_node(entity)
+            elif type_graph == "extend":
+                response = self.cypher_deep_node(entity)
+            result += response
+        result = self.clean_sub_graph(result)
         return result
     
+    def extended_question(self, question: str) -> str:
+        subgraph_context = self.graph_retriever(question, "sub")
+        print(subgraph_context)
+        sub_graph_data_filter = self.filter_sub_graph(question, subgraph_context) 
+        template = PromptTemplate(
+            input_variables=["sub_graph_data_filter", "question"],
+            template="""Hãy viết lại câu hỏi:{question} thành câu hỏi mới cụ thể, đầy đủ và chuẩn hóa
+                    bằng cách lấy thêm ngữ cảnh từ {sub_graph_data_filter}.Chỉ trả về câu hỏi mới."""
+        )
+        chain = template | self.llm | StrOutputParser()
+        response = chain.invoke({
+            "sub_graph_data_filter": sub_graph_data_filter,
+            "question": question
+        })
+        return response
+    
     def full_retriever(self, question: str) -> str:
-        graph_data = self.graph_retriever(question)
+        subgraph_extend_context = self.graph_retriever(question, "extend")
+        graph_data_filter = self.filter_sub_graph(question, subgraph_extend_context)
+        extended_question = self.extended_question(question)
         vector_retriever = self.vector_index.as_retriever()
-        vector_data = [el.page_content for el in vector_retriever.invoke(question)]
+        vector_data = [el.page_content for el in vector_retriever.invoke(extended_question)]
 
         final_data = f"""Graph data:
-            {graph_data}
+            {graph_data_filter}
             Vector data:
             {"#Document ".join(vector_data)}
             """ 
-        print(final_data)
-        print("======================================")
         return final_data
     
     def run_chain(self,question: str) -> str:
