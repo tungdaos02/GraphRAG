@@ -1,5 +1,5 @@
 import pytesseract
-import io
+import io, re
 import fitz
 from PIL import Image
 
@@ -30,3 +30,18 @@ class UploadData:
                         full_text.append(ocr_text)
 
             return "\n\n".join(full_text)
+    
+    def _get_metadata_custome(pdf_path):
+        doc = fitz.open(pdf_path)
+        full_text = ""
+        for page in doc:
+            full_text += page.get_text("text") +"\n"
+        doc.close()
+
+        pattern = re.compile(r'^\s*([^:\n]{1,50}?)\s*:\s*(.+)$', re.MULTILINE)
+        kv = {}
+        for match in pattern.finditer(full_text):
+            key = match.group(1).strip().lower()
+            val = match.group(2).strip()
+            kv[key] = val
+        return kv

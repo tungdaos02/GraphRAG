@@ -2,14 +2,13 @@ from langchain_neo4j.graphs.neo4j_graph import Neo4jGraph
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 from langchain_openai import ChatOpenAI
-from langchain.schema import Document
 # from neo4j import GraphDatabase
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
-def load_data_neo4j(raw_text: str):
+def load_data_neo4j(raw_text):
 
     graph = Neo4jGraph(
             url = os.getenv("NEO4J_URI"),                
@@ -17,10 +16,9 @@ def load_data_neo4j(raw_text: str):
             password = os.getenv("NEO4J_PASSWORD"),         
             database = os.getenv("NEO4J_DATABASE")
         ) 
-    docs = [Document(page_content=raw_text)]
 
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=200)
-    chunks = text_splitter.split_documents(docs)
+    chunks = text_splitter.split_documents([raw_text])
 
     llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0, openai_api_key=os.getenv("OPENAI_API_KEY"))
 

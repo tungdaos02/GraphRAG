@@ -8,3 +8,5 @@ Pillow
 pytesseract
 neo4j
 pymupdf
+pymupdf4llm
+scikit-learn
